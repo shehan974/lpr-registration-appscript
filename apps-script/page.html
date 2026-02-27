@@ -1,0 +1,2211 @@
+<!doctype html>
+<!--
+  LPR Registration System — v4.6.1
+  Major release replacing the v2.5.23 staff workflow.
+
+  Includes:
+  • New sticky mini-bar UI (context chip + reset + staff identity)
+  • Context engine (date → jour/cours) driving the entire workflow
+  • Full backdating: ISSUE, SPEND, ATTEND, DROP-IN
+  • Doorlist redesign with zebra, partial markers, explicit “OK — Cours”
+  • French ordering (NOM Prénom) + sorting
+  • Search: compact layout with inline filters
+  • Smart enable/disable for validation buttons
+  • Admin-only independent recap section
+  • Drop-in multi-class + expected-price correctness
+
+  Frontend for staff mode, tightly linked to code.js backend logic.
+  Maintainer: Shehan
+  Release date: 2025-12-02
+-->
+
+<html lang="fr">
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no">
+<script>
+  // Detect phones/tablets even inside iframes (no reliance on width/viewport)
+  (function () {
+    var phoneLike = (function(){
+      var mm = window.matchMedia('(hover: none) and (pointer: coarse)');
+      if (mm && mm.matches) return true;
+      if (navigator.maxTouchPoints && navigator.maxTouchPoints > 0) return true;
+      var ua = navigator.userAgent || '';
+      return /Android|iPhone|iPad|iPod|Mobile/i.test(ua);
+    })();
+    if (phoneLike) {
+      // Add a stable class that CSS can key off
+      document.documentElement.classList.add('phoneLike');
+      document.body && document.body.classList.add('phoneLike');
+      // Keep it sticky in case body/classList changes later
+      document.addEventListener('DOMContentLoaded', function(){
+        document.documentElement.classList.add('phoneLike');
+        document.body.classList.add('phoneLike');
+      });
+    }
+  })();
+</script>
+
+<style>
+  /* === LPR MOBILE RESET & SCALE SYSTEM (single-knob) === */
+
+  /* ---------- GLOBAL KNOBS (change only these) ---------- */
+  :root{
+    --pad:12px;
+
+    /* Desktop base (keeps your Mac size) */
+    --font-base-desktop: 14px;
+
+    /* Mobile base – change this to 24/26/28 to scale EVERYTHING on phones */
+    --font-base-mobile: 26px;
+
+    /* Optional global multiplier for fine tuning (e.g., 1.10 for +10%) */
+    --ui-scale: 1.10;
+
+    --cb-scale: 1.45; /* Android-only fallback scale for the checkbox box */
+  }
+
+  /* Keep platform auto-scaling neutral; we control size */
+  html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+
+  /* ---------- BASE TYPOGRAPHY / LAYOUT ---------- */
+  body{
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    margin: var(--pad);
+    font-size: var(--font-base-desktop);
+    line-height: 1.35;
+  }
+
+  .card  { border:1px solid #ddd; border-radius:12px; padding:var(--pad); margin-bottom:10px; }
+  .row   { display:flex; justify-content:space-between; margin:6px 0; }
+  .muted { color:#666; }
+  .small { font-size: 0.95em; color:#555; }
+  .chip  { display:inline-block; padding:2px 8px; border:1px solid #ccc; border-radius:999px; margin-left:6px; background:#f9f9f9; }
+
+  /* Buttons / inputs scale with body (em) */
+  .btn{
+    display:inline-block; padding:8px 12px; border-radius:10px; border:1px solid #ccc;
+    text-decoration:none; cursor:pointer; font-size:1em;
+  }
+  .btn + .btn { margin-left:6px; }
+  .btn:hover { background:#f7f7f7; }
+  .good{ border-color:#3a3; } .danger{ border-color:#d33; }
+
+  input:not([type="checkbox"]), select, textarea{
+    padding:10px; border:1px solid #ccc; border-radius:8px; width:100%; box-sizing:border-box;
+    font-size:1em; line-height:1.3;
+  }
+
+  /* Checkbox and label scale together based on body font size */
+  label.cb {
+    display: flex;
+    align-items: center;
+    gap: 0.6em;           /* gap follows text scale */
+    line-height: 1.2;
+    padding: 0.4em 0.2em; /* finger room follows text scale */
+    font-size: 1em;       /* inherits from body; no independent control needed */
+  }
+
+  label.cb input[type="checkbox"] {
+    inline-size: 1.25em;  /* scales automatically with label text */
+    block-size: 1.25em;
+    accent-color: #1f7a3b;
+  }
+  /* --- ANDROID CHROME FALLBACK: scale the native checkbox box --- */
+  @media (hover: none) and (pointer: coarse) {
+    .phoneLike label.cb input[type="checkbox"]{
+      transform: scale(var(--cb-scale));
+      transform-origin: left center;
+      margin-right: calc( (var(--cb-scale) - 1) * 0.55em );
+    }
+  }
+
+  /* Grid forms (desktop/tablet default = 2 cols) */
+  form{ display:grid; grid-template-columns:1fr 1fr; gap:10px; width:100%; }
+  form .full{ grid-column:1 / -1; }
+  .grid2{ display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+
+  .compact{ font-size:0.95em; line-height:1.25; }
+  .right{ text-align:right; }
+
+  /* Spinner */
+  .spinner{ display:inline-block; width:14px; height:14px; border:2px solid #aaa; border-top-color:transparent; border-radius:50%; vertical-align:middle; animation:spin 0.8s linear infinite; margin-left:6px; }
+  @keyframes spin{ to { transform: rotate(360deg); } }
+
+  /* Details summary cleanup */
+  details > summary{ list-style:none; cursor:pointer; }
+  details > summary::-webkit-details-marker{ display:none; }
+  details.card > summary{ padding:6px 0; }
+
+  /* Context chip */
+  .contextbar{ display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+  .ctxchip{ background:#e6f7ea; color:#1f7a3b; border:1px solid #9fddb2; }
+  .aslink{ background:transparent; border-color:#9fddb2; cursor:pointer; }
+  .aslink:hover{ background:#eefaf1; }
+
+  /* Flash */
+  .flash{ border:1px solid #9fddb2; background:#e6f7ea; padding:10px; border-radius:10px; margin:10px 0 }
+
+  /* Sticky MINI bar — compact, max 2 lines */
+  #stickyBar{
+    position: sticky;
+    top: 0;
+    z-index: 60;
+    background:#fff;
+    padding: 4px 0 6px;
+    border-bottom: 1px solid #eee;
+  }
+
+  #stickyBar .stickyRow1,
+  #stickyBar .stickyRow2{
+    display:flex;
+    align-items:center;
+    gap:8px;
+  }
+
+  /* Row 1: context left, name right */
+  #stickyBar .stickyRow1{
+    justify-content:space-between;
+  }
+
+  /* Row 2: everything goes to the right (reset under the name) */
+  #stickyBar .stickyRow2{
+    margin-top:2px;
+    justify-content:flex-end;
+  }
+
+  #stickyBar .who{
+    font-size:0.95em;
+    color:#555;
+    white-space:nowrap;
+  }
+
+  /* Context chip: try to keep one line */
+  #stickyBar .ctxchip{
+    max-width:70vw;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+  }
+
+  /* Reset chip: no left-margin hacks */
+  #stickyBar .resetchip{
+    margin-left:0;
+  }
+
+  /* Door checklist styling */
+  .tint-door{
+    background:#f6fbf5;
+    border-color:#c8e6c9;
+  }
+ .door-row{
+    border-top:2px solid #e1e8e1;
+    padding:10px 8px;
+    margin:0;
+  }
+  .door-row + .door-row{
+    border-top:2px solid #d7ded7;
+  }
+  .door-zebra-a{ background:#ffffff; }
+  .door-zebra-b{ background:#f5faf5; }
+
+  .door-row-main{
+    margin-bottom:4px;
+  }
+  .door-row-main .chip{
+    margin-top:2px;
+  }
+  .door-row-classes{
+    display:flex;
+    flex-wrap:wrap;
+    gap:6px;
+    align-items:center;
+  }
+  .door-row-action{
+    margin-left:auto;
+  }
+  .door-row-allDone{
+    opacity:0.45;
+  }
+  .door-row-partial{
+    border-left:4px solid #1f7a3b;
+    background:#fffdf0;
+  }
+  .door-cell-done{
+    opacity:0.7;
+    text-decoration:line-through;
+  }
+  .door-cell-disabled{
+    opacity:0.3;
+  }
+
+.doorBtn{
+  display:inline-block;
+  padding:6px 12px;
+  border-radius:999px;
+  border:2px solid #444;
+  background:#ffffff;
+  font-size:0.9em;
+  cursor:pointer;
+  white-space:nowrap;
+  font-weight:600;
+  box-shadow:0 1px 2px rgba(0,0,0,0.15);
+}
+
+.doorBtn.small{
+  font-size:0.85em;
+}
+
+/* Card vs Trim: same basic look, only subtle accent */
+.doorBtn-card{
+  border-color:#1f7a3b;
+}
+
+.doorBtn-trim{
+  border-color:#1f4f7a;
+}
+
+.doorBtn[disabled]{
+  opacity:0.6;
+  cursor:default;
+  box-shadow:none;
+}
+
+.doorBtn-tag{
+  font-size:0.8em;
+  margin-left:6px;
+}
+
+
+
+
+  @media (max-width:768px){
+    .door-row-classes{
+      flex-direction:column;
+      align-items:flex-start;
+    }
+    .door-row-action{
+      margin-left:0;
+      margin-top:6px;
+    }
+  }
+
+  /* Tints */
+  .tint-search{ background:#eef5ff; border-color:#c4d7ff; }
+  .tint-trim{   background:#fffaf5; }
+  .tint-card{   background:#f7fffa; }
+  .tint-drop{   background:#f9f7ff; }
+  .tint-report{ background:#f0fbff; border-color:#b5e0ff; }
+
+  /* Hide the big context form once set */
+  #ctxCard.collapsed{ display:none; }
+
+  /* Headings scale off BODY (em), not root */
+  h2{ font-size:1.35em; }
+  h3{ font-size:1.18em; }
+
+  /* Prevent any hidden min-width fights */
+  input, select, textarea{ max-width:100%; }
+
+  /* ---------- DESKTOP/TABLET ---------- */
+  @media (min-width:768px){
+    html{ font-size:17px; }
+    body{ line-height:1.35; }
+  }
+
+  /* Single-column on small screens / touch */
+  @media (max-width:1024px), (hover:none) and (pointer:coarse){
+    form,
+    .grid2,
+    details.tint-trim form,
+    details.tint-card form,
+    details.tint-drop form{
+      grid-template-columns:1fr !important;
+    }
+  }
+
+  /* Tighten headings slightly on narrower screens */
+  @media (max-width:768px){
+    h2{ font-size:1.30em; }
+    h3{ font-size:1.15em; }
+  }
+
+  /* ---------- PHONE-LIKE OVERRIDES (iframe-safe via .phoneLike) ---------- */
+  .phoneLike body{
+    font-size: calc(var(--font-base-mobile) * var(--ui-scale)) !important;
+    line-height: 1.55 !important;
+  }
+
+  .phoneLike .btn,
+  .phoneLike input:not([type="checkbox"]),
+  .phoneLike select,
+  .phoneLike textarea{
+    font-size: 1.08em !important;
+    min-height: 56px !important;
+  }
+
+  .phoneLike h2{ font-size:1.45em !important; }
+  .phoneLike h3{ font-size:1.26em !important; }
+  .phoneLike details > summary{ font-size:1em !important; }
+
+  .phoneLike label.cb { font-size: 1.12em !important; }
+  .phoneLike .chip,
+  .phoneLike .small{ font-size:1.06em !important; }
+
+  .phoneLike .card{ padding:18px !important; }
+  .phoneLike .row { margin:10px 0 !important; }
+
+  @supports (-webkit-touch-callout:none){
+    .phoneLike input:not([type="checkbox"]),
+    .phoneLike select,
+    .phoneLike textarea,
+    .phoneLike button{ font-size:1em !important; }
+  }
+
+  /* ---------- Better visual for collapsible cards (details.card) ---------- */
+  details.card{
+    margin-top:16px;
+    border-radius:12px;
+    border:1px solid #ddd;
+    padding:0;
+    overflow:hidden;
+  }
+
+  details.card > summary{
+    padding:10px var(--pad);
+    margin:0;
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    cursor:pointer;
+    list-style:none;
+  }
+
+  details.card > summary h3{
+    margin:0;
+  }
+
+  details.card > summary::after{
+    content:'▾';
+    font-size:0.9em;
+    opacity:0.7;
+    transition:transform 0.2s;
+  }
+
+  details.card[open] > summary::after{
+    transform:rotate(180deg);
+  }
+
+  details.card > summary:hover{
+    background:#f7f7f7;
+  }
+
+  /* Inner content padding for collapsibles */
+  details.card > form,
+  details.card > div{
+    padding:0 var(--pad) var(--pad);
+  }
+
+  /* Space between stacked collapsible sections */
+  details.card + details.card{
+    margin-top:18px;
+  }
+
+</style>
+</head>
+<body>
+
+  <!-- Student view -->
+  <? if (view.kind === 'student') { ?>
+    <div class="card">
+      <h2>La Panthère Rose — Espace élève</h2>
+
+      <? if (!view.ok) { ?>
+        <p><?= view.msg ?></p>
+
+      <? } else if (view.isTrim) { ?>
+        <p><strong><?= view.nom ?> <?= view.prenom ?></strong> — ID: <?= view.id ?></p>
+        <div class="row"><div>Inscription</div><div>Trimestre (actif)</div></div>
+        <div class="row"><div>Forfait</div><div><?= view.trim.forfait || '—' ?></div></div>
+        <div class="row"><div>Date de paiement</div><div><?= view.trim.paid || '—' ?></div></div>
+        <? if (view.trim.coursIncl) { ?>
+          <div class="row"><div>Cours inclus</div><div><?= view.trim.coursIncl ?></div></div>
+        <? } ?>
+        <? if (view.trim.window) { ?>
+          <div class="row"><div>Période</div><div><?= view.trim.window ?></div></div>
+        <? } ?>
+        <p class="muted small">Validité : ce trimestre (12&nbsp;semaines, hors vacances sauf annonce contraire). Les absences ne sont pas reportées.</p>
+
+      <? } else { ?>
+        <p><strong><?= view.nom ?> <?= view.prenom ?></strong> — ID: <?= view.id ?></p>
+        <div class="row"><div>Cours total</div><div><?= view.total ?></div></div>
+        <div class="row"><div>Cours utilisés</div><div><?= view.used ?></div></div>
+        <div class="row"><div>Cours restants</div><div><?= view.left ?></div></div>
+        <div class="row"><div>Valide jusqu’au</div><div><?= view.until ?> <?= view.expired?'(expirée)': '' ?></div></div>
+        <p class="muted small">Montrez ce QR/lien à l’accueil pour valider votre présence.</p>
+      <? } ?>
+    </div>
+  <? } ?>
+
+  <!-- Staff mode -->
+  <? if (view.kind === 'staff') { ?>
+    <? 
+      function fmtFRShortLocal(d){
+        if (!d) return '';
+        var date = (d instanceof Date) ? new Date(d) : new Date(d);
+        if (isNaN(date)) return '';
+        var day = date.getDate();
+        var months = ['janv.','févr.','mars','avr.','mai','juin','juil.','août','sept.','oct.','nov.','déc.'];
+        var m = months[date.getMonth()];
+        var y2 = String(date.getFullYear()).slice(-2);
+        return day + ' ' + m + " \u2019" + y2; // 24 févr. ’25
+      }
+    ?>
+    <script src="https://unpkg.com/@zxing/library@latest"></script>
+    <script>
+      // payloads from server
+      const MAPPING = JSON.parse('<?= JSON.stringify(view.mappingJson || "{}") ?>' || '{}');
+      const mapping = JSON.parse(MAPPING || '{"jours":[],"mapping":{}}');
+
+      // Populate dependent Cours by Jour
+      function fillCours(selectJourEl, selectCoursEl){
+        const j = selectJourEl.value || '';
+        const list = (mapping.mapping && mapping.mapping[j]) || [];
+        selectCoursEl.innerHTML = '<option value="">Cours…</option>';
+        list.forEach(c=>{
+          const opt = document.createElement('option');
+          opt.value = c; opt.textContent = c;
+          if (selectCoursEl.dataset.cur === c) opt.selected = true;
+          selectCoursEl.appendChild(opt);
+        });
+      }
+
+      // Price maps injected from server (keep it tiny/flat)
+      const TRIM_PRICES = JSON.parse('<?= JSON.stringify(CFG.TRIM_PRICES) ?>');
+      const CARD_PRICES = { '6': <?= CFG.PRICE_CARD_6 ?>, '12': <?= CFG.PRICE_CARD_12 ?> };
+
+      function bindAutoPrice(formEl){
+        if (!formEl) return;
+        const forfaitSel = formEl.querySelector('select[name="forfait"]');
+        const trimAmount = formEl.querySelector('input[name="amountEncaisse"]');
+        if (forfaitSel && trimAmount){
+          forfaitSel.addEventListener('change', ()=>{
+            const label = forfaitSel.value || '';
+            if (TRIM_PRICES[label] != null) trimAmount.value = TRIM_PRICES[label];
+          });
+        }
+        const cardSel = formEl.querySelector('select[name="cardType"]');
+        const cardAmount = formEl.querySelector('input[name="amountEncaisse"]');
+        if (cardSel && cardAmount){
+          cardSel.addEventListener('change', ()=>{
+            const ct = cardSel.value || '';
+            if (CARD_PRICES[ct] != null) cardAmount.value = CARD_PRICES[ct];
+          });
+        }
+      }
+
+      function openContextModal(onConfirm, onCancel){
+        const modal = document.getElementById('ctxModal');
+        const dInp  = document.getElementById('ctxModalDate');
+
+        // default to today
+        if (!dInp.value){
+          const now = new Date();
+          const y = now.getFullYear();
+          const m = String(now.getMonth()+1).padStart(2,'0');
+          const da= String(now.getDate()).padStart(2,'0');
+          dInp.value = `${y}-${m}-${da}`;
+        }
+
+        modal.style.display = 'block';
+        modal.querySelector('[data-act="cancel"]').onclick = ()=>{
+          modal.style.display='none';
+          onCancel && onCancel();
+        };
+        modal.querySelector('[data-act="ok"]').onclick = ()=>{
+          const d = dInp.value || '';
+          if (!d) { alert('Choisissez une date.'); return; }
+          modal.style.display='none';
+          onConfirm && onConfirm(d);
+        };
+      }
+
+      // --- Form-level validations (front-only) ---
+
+      function validateTrimCours(formEl){
+        // At least one "coursIncl" must be checked for a trimestre
+        var boxes = formEl.querySelectorAll('input[name="coursIncl"]:checked');
+        if (!boxes.length){
+          alert('Choisis au moins un cours inclus pour ce trimestre.');
+          return false;
+        }
+        return true;
+      }
+
+      function validateCardPrefs(formEl){
+        // At least one "coursPref" must be checked for a card
+        var boxes = formEl.querySelectorAll('input[name="coursPref"]:checked');
+        if (!boxes.length){
+          alert('Choisis au moins un cours préféré pour la carte.');
+          return false;
+        }
+        return true;
+      }
+
+
+      function guardSubmit(form, btn){
+        // Ensure submission_id
+        function ensureSubmissionId(){
+          let sidInput = form.querySelector('input[name="submission_id"]');
+          if (!sidInput){
+            sidInput = document.createElement('input');
+            sidInput.type = 'hidden';
+            sidInput.name = 'submission_id';
+            form.appendChild(sidInput);
+          }
+          if (!sidInput.value){
+            sidInput.value = 'S-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2,8);
+          }
+        }
+
+        // Context date presence
+        const ctxDateHidden = form.querySelector('input[name="ctx_date"]');
+        const hasCtxDate = !!(ctxDateHidden && ctxDateHidden.value);
+
+        // “Needs context?” if the form is trying to check-in now
+        // We detect that by hidden fields holding selected classes.
+        let needsCtx = false;
+        const nowFields = ['useNow_multi', 'useNow_multi_card', 'dropin_multi', 'cours_sel', 'doorCours'];
+        nowFields.forEach(n=>{
+          const el = form.querySelector(`[name="${n}"]`);
+          if (el && String(el.value||'').trim()) needsCtx = true;
+        });
+
+        if (needsCtx && !hasCtxDate){
+          openContextModal((selDate)=>{
+            if (ctxDateHidden) ctxDateHidden.value = selDate;
+            try { localStorage.setItem('lpr_ctx_date', selDate); } catch(e) {}
+            ensureSubmissionId();
+            form.submit();
+          }, ()=>{});
+          return false;
+        }
+
+        if (btn && btn.dataset.busy==="1") return false;
+        if (btn){
+          btn.dataset.busy = "1";
+          const txt = btn.textContent;
+          btn.textContent = txt + '…';
+          const sp = document.createElement('span'); sp.className='spinner'; btn.appendChild(sp);
+          btn.disabled = true;
+        }
+
+        ensureSubmissionId();
+        form.submit();
+        return false;
+      }
+
+      function setContextDate(d) {
+        const f = document.getElementById('ctxQuickForm');
+        if (!f) return;
+        const dInp = f.querySelector('input[name="ctx_date"]');
+        if (dInp) dInp.value = d || '';
+        f.submit();
+      }
+      function changeContextViaChip() {
+        openContextModal((selDate)=> setContextDate(selDate));
+      }
+
+      function startScanner(){
+        const codeReader = new ZXing.BrowserMultiFormatReader();
+        const overlay = document.getElementById('scanOverlay');
+        overlay.style.display='block';
+        codeReader.listVideoInputDevices().then(devices=>{
+          const back = devices.find(d => /back|arriere|rear|environment/i.test(d.label)) || (devices[0] || null);
+          return codeReader.decodeFromVideoDevice(back && back.deviceId || null, 'video', (result)=>{
+            if (result && result.text){
+              document.getElementById('q').value = result.text;
+              stopScanner();
+              document.getElementById('scanSubmit').click();
+            }
+          });
+        }).then(()=>{
+          window._zxing = codeReader;
+        }).catch(e=>{
+          alert('Impossible d’ouvrir la caméra. Essayez le bouton “Coller & chercher”.');
+          overlay.style.display='none';
+        });
+      }
+      function stopScanner(){
+        const overlay = document.getElementById('scanOverlay');
+        overlay.style.display='none';
+        if (window._zxing){ try{ window._zxing.reset(); }catch(e){} }
+      }
+      function pasteAndSearch(){
+        try{
+          navigator.clipboard.readText().then(t=>{
+            if (!t) { alert('Presse-papiers vide.'); return; }
+            document.getElementById('q').value = t;
+            document.getElementById('scanSubmit').click();
+          }).catch(()=>alert('Autorisez l’accès au presse-papiers ou collez manuellement.'));
+        }catch(e){
+          alert('Collez manuellement dans la zone de recherche.');
+        }
+      }
+
+      // ─────────────────────────────────────────────────────────────
+      // AJAX STAFF CLIENT — Chunk A (FINAL, matched to Code.gs)
+      // Intercept Search + Issue Card + Issue Trim + Drop-in forms
+      // Keeps validations + context modal, then calls google.script.run
+      // ─────────────────────────────────────────────────────────────
+
+      function formToObject(form){
+        const fd = new FormData(form);
+        const obj = {};
+        fd.forEach((v,k)=>{
+          if (obj[k] != null){
+            if (!Array.isArray(obj[k])) obj[k] = [obj[k]];
+            obj[k].push(v);
+          } else {
+            obj[k] = v;
+          }
+        });
+        return obj;
+      }
+
+      function setBusy(btn, busy){
+        if (!btn) return;
+        if (busy){
+          if (btn.dataset.busy==="1") return;
+          btn.dataset.busy="1";
+          const txt = btn.textContent;
+          btn.dataset.txt=txt;
+          btn.textContent = txt + '…';
+          const sp=document.createElement('span'); sp.className='spinner'; btn.appendChild(sp);
+          btn.disabled=true;
+        } else {
+          btn.dataset.busy="0";
+          btn.disabled=false;
+          const old = btn.dataset.txt || btn.textContent.replace('…','');
+          btn.textContent = old;
+        }
+      }
+
+      function showFlashFromAjax(resp){
+        const flashHost = document.querySelector('.flash') || (function(){
+          const head = document.querySelector('.card');
+          if (!head) return null;
+          const d=document.createElement('div');
+          d.className='flash';
+          head.appendChild(d);
+          return d;
+        })();
+        if (!flashHost) return;
+
+        flashHost.innerHTML = resp && resp.flashHtml ? resp.flashHtml : '';
+        if (resp && resp.flashHtml){
+          flashHost.scrollIntoView({behavior:'smooth', block:'start'});
+        }
+      }
+
+      function ajaxCall_(fnName, payload, onOk, onErr){
+        google.script.run
+          .withSuccessHandler(function(resp){
+            onOk && onOk(resp || {});
+          })
+          .withFailureHandler(function(err){
+            onErr && onErr(err);
+          })[fnName](payload);
+      }
+
+      function handleAjaxSubmit(form, btn){
+        const p = formToObject(form);
+        const act = String(p.do || '').toUpperCase();
+
+        // ---- same validations as old inline onsubmit ----
+        if (act === 'TRIM'){
+          if (!validateTrimCours(form)){
+            setBusy(btn, false);
+            return false;
+          }
+        }
+        if (act === 'ISSUE'){
+          if (!validateCardPrefs(form)){
+            setBusy(btn, false);
+            return false;
+          }
+        }
+
+        // ---- same context guard as guardSubmit ----
+        const ctxDateHidden = form.querySelector('input[name="ctx_date"]');
+        const hasCtxDate = !!(ctxDateHidden && ctxDateHidden.value);
+
+        let needsCtx = false;
+        ['useNow_multi', 'useNow_multi_card', 'dropin_multi', 'cours_sel', 'doorCours']
+          .forEach(n=>{
+            const el = form.querySelector(`[name="${n}"]`);
+            if (el && String(el.value||'').trim()) needsCtx = true;
+          });
+
+        if (needsCtx && !hasCtxDate){
+          openContextModal((selDate)=>{
+            if (ctxDateHidden) ctxDateHidden.value = selDate;
+            try { localStorage.setItem('lpr_ctx_date', selDate); } catch(e) {}
+            handleAjaxSubmit(form, btn);
+          }, ()=>{});
+          return false;
+        }
+
+        // ---- always generate a fresh submission_id for each AJAX submit ----
+        p.submission_id = 'S-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2,8);
+        const hid = form.querySelector('input[name="submission_id"]') || (function(){
+          const h = document.createElement('input');
+          h.type  = 'hidden';
+          h.name  = 'submission_id';
+          form.appendChild(h);
+          return h;
+        })();
+        hid.value = p.submission_id;
+
+        setBusy(btn, true);
+
+        if (act === 'SEARCH'){
+          ajaxCall_('staffSearchAjax', p, function(resp){
+            setBusy(btn, false);
+            if (!resp.ok){
+              showFlashFromAjax(resp);
+              return;
+            }
+            // resp already has {results, moreCount, allCount}
+            renderSearchResultsAjax(resp);
+          }, function(){
+            setBusy(btn, false);
+            showFlashFromAjax({flashHtml:'<div class="flash">Erreur réseau (recherche).</div>'});
+          });
+          return false;
+        }
+
+        if (act === 'ISSUE'){
+          ajaxCall_('staffIssueCardAjax', p, function(resp){
+            setBusy(btn, false);
+
+            // On success: reset + collapse CARD form
+            if (resp && resp.ok && resp.kind === 'ok'){
+              try{
+                form.reset();
+                const det = form.closest('details');
+                if (det) det.open = false;
+              }catch(e){}
+            }
+
+            showFlashFromAjax(resp);
+          }, function(){
+            setBusy(btn, false);
+            showFlashFromAjax({flashHtml:'<div class="flash">Erreur réseau (carte).</div>'});
+          });
+          return false;
+        }
+
+        if (act === 'TRIM'){
+          ajaxCall_('staffIssueTrimAjax', p, function(resp){
+            setBusy(btn, false);
+
+            // On success: reset + collapse TRIM form
+            if (resp && resp.ok && resp.kind === 'ok'){
+              try{
+                form.reset();
+                const det = form.closest('details');
+                if (det) det.open = false;
+              }catch(e){}
+            }
+
+            showFlashFromAjax(resp);
+          }, function(){
+            setBusy(btn, false);
+            showFlashFromAjax({flashHtml:'<div class="flash">Erreur réseau (trimestre).</div>'});
+          });
+          return false;
+        }
+
+        if (act === 'DROPIN'){
+          ajaxCall_('staffDropinAjax', p, function(resp){
+            setBusy(btn, false);
+
+            // On success: reset + collapse DROP-IN form
+            if (resp && resp.ok && resp.kind === 'ok'){
+              try{
+                form.reset();
+                const det = form.closest('details');
+                if (det) det.open = false;
+              }catch(e){}
+            }
+
+            showFlashFromAjax(resp);
+          }, function(){
+            setBusy(btn, false);
+            showFlashFromAjax({flashHtml:'<div class="flash">Erreur réseau (drop-in).</div>'});
+          });
+          return false;
+        }
+
+        setBusy(btn, false);
+        return true; // fallback POST for anything else
+      }
+
+
+      function esc_(s){
+        return String(s||'')
+          .replace(/&/g,'&amp;')
+          .replace(/</g,'&lt;')
+          .replace(/>/g,'&gt;')
+          .replace(/"/g,'&quot;')
+          .replace(/'/g,'&#39;');
+      }
+
+      function prefillCardFromResult(r){
+        const details = document.querySelector('details.tint-card');
+        const form = details ? details.querySelector('form') : null;
+        if (!form) return;
+
+        const nom  = form.querySelector('[name="nom"]');
+        const pre  = form.querySelector('[name="prenom"]');
+        const mail = form.querySelector('[name="email"]');
+        const tel  = form.querySelector('[name="telephone"]');
+
+        if (nom)  nom.value  = r.nom   || '';
+        if (pre)  pre.value  = r.prenom|| '';
+        if (mail) mail.value = r.email || '';
+        if (tel)  tel.value  = r.tel   || '';
+
+        // Open the CARD section
+        if (details) details.open = true;
+        details.scrollIntoView({behavior:'smooth', block:'start'});
+      }
+
+      function prefillTrimFromResult(r){
+        const details = document.querySelector('details.tint-trim');
+        const form = details ? details.querySelector('form') : null;
+        if (!form) return;
+
+        const nom  = form.querySelector('[name="nom"]');
+        const pre  = form.querySelector('[name="prenom"]');
+        const mail = form.querySelector('[name="email"]');
+        const tel  = form.querySelector('[name="telephone"]');
+
+        if (nom)  nom.value  = r.nom   || '';
+        if (pre)  pre.value  = r.prenom|| '';
+        if (mail) mail.value = r.email || '';
+        if (tel)  tel.value  = r.tel   || '';
+
+        // Forfait from prereg if available
+        const forfaitSel = form.querySelector('select[name="forfait"]');
+        const amountInp  = form.querySelector('input[name="amountEncaisse"]');
+
+        if (forfaitSel && r.prereg && r.prereg.forfaitTrim){
+          forfaitSel.value = r.prereg.forfaitTrim;
+
+          // Use TRIM_PRICES injected at top
+          if (typeof TRIM_PRICES === 'object' && TRIM_PRICES[forfaitSel.value] != null && amountInp){
+            amountInp.value = TRIM_PRICES[forfaitSel.value];
+          }
+        }
+
+        if (details) details.open = true;
+        details.scrollIntoView({behavior:'smooth', block:'start'});
+      }
+
+      function prefillDropinFromResult(r){
+        const details = document.querySelector('details.tint-drop');
+        const form = details ? details.querySelector('form') : null;
+        if (!form) return;
+
+        const nom  = form.querySelector('[name="nom"]');
+        const pre  = form.querySelector('[name="prenom"]');
+        const mail = form.querySelector('[name="email"]');
+        const tel  = form.querySelector('[name="telephone"]');
+
+        if (nom)  nom.value  = r.nom    || '';
+        if (pre)  pre.value  = r.prenom || '';
+        if (mail) mail.value = r.email  || '';
+        if (tel)  tel.value  = r.tel    || '';
+
+        // Open the DROP-IN section and scroll to it
+        if (details) details.open = true;
+        details.scrollIntoView({behavior:'smooth', block:'start'});
+      }
+
+
+      function renderSearchResultsAjax(resp){
+        const host = document.querySelector('.tint-search');
+        if (!host) return;
+
+        // remove old results blocks (everything after the search <form>)
+        const forms = host.querySelectorAll('form');
+        const searchForm = forms && forms[0];
+        let node = searchForm ? searchForm.nextElementSibling : null;
+        while (node){
+          const next = node.nextElementSibling;
+          node.remove();
+          node = next;
+        }
+
+        const results = resp.results || [];
+        const moreCount = resp.moreCount || 0;
+
+        if (!results.length){
+          const empty = document.createElement('div');
+          empty.className='small muted';
+          empty.textContent='Aucun résultat.';
+          host.appendChild(empty);
+          return;
+        }
+
+        const meta = document.createElement('div');
+        meta.className='small muted';
+        meta.textContent = 'Résultats : '+results.length+(moreCount?(' (+'+moreCount+' masqués)'):'');
+        host.appendChild(meta);
+
+        results.forEach(r=>{
+          const card = document.createElement('div');
+          card.className='card compact';
+          card.style.margin='10px 0';
+          card.style.padding='10px';
+
+          const chips = [];
+          if (r.id) chips.push('<span class="chip">ID: '+esc_(r.id)+'</span>');
+          chips.push('<span class="chip">'+esc_(r.source||'')+'</span>');
+          if (r.typeOffre) chips.push('<span class="chip">'+esc_(r.typeOffre)+'</span>');
+          if (r.typeOffre && String(r.typeOffre).toLowerCase().startsWith('carte')){
+            chips.push('<span class="chip">'+esc_(r.left)+'/'+esc_(r.total)+'</span>');
+          }
+          if (r.until){
+            const d = new Date(r.until);
+            chips.push('<span class="chip">Jusqu’au: '+d.toLocaleDateString('fr-FR')+(r.expired?' (expirée)':'')+'</span>');
+          }
+          if (typeof r.owed !== 'undefined'){
+            const owed = Number(r.owed||0);
+            const bg = owed>0 ? '#fff5f5' : (owed<0 ? '#fffbe6' : '#f3fff3');
+            const bd = owed>0 ? '#f5c2c7' : (owed<0 ? '#ffe58f' : '#9fddb2');
+            chips.push('<span class="chip" style="background:'+bg+';border-color:'+bd+';">Solde: '+owed+'€</span>');
+          }
+
+          card.innerHTML = `
+            <div>
+              <strong>${esc_(r.nom)} ${esc_(r.prenom)}</strong>
+              ${chips.join(' ')}
+            </div>
+            <div class="small muted">
+              ${esc_(r.email||'')} ${r.tel?(' · '+esc_(r.tel)):''}
+              ${ (r.source==='Members' && r.typeOffre && String(r.typeOffre).toLowerCase().startsWith('trimestre') && r.forfaitTrim)
+                  ? (' · Forfait: '+esc_(r.forfaitTrim)) : '' }
+              ${ (r.source==='Members' && r.typeOffre && String(r.typeOffre).toLowerCase().startsWith('trimestre') && r.coursIncl)
+                  ? (' · Cours inclus: '+esc_(r.coursIncl)) : '' }
+            </div>
+          `;
+
+          if (r.source !== 'Members'){
+            const pfWrap = document.createElement('div');
+            pfWrap.style.marginTop = '6px';
+            pfWrap.innerHTML = `
+              <div class="small muted">Pré-remplir création :</div>
+              <div style="margin-top:4px; display:flex; gap:8px; flex-wrap:wrap">
+                <button type="button" class="btn" data-pf="card">Pré-remplir Carte</button>
+                <button type="button" class="btn" data-pf="trim">Pré-remplir Trimestre</button>
+                <button type="button" class="btn" data-pf="dropin">Pré-remplir Drop-in</button>
+              </div>
+            `;
+            card.appendChild(pfWrap);
+
+            pfWrap.querySelectorAll('button[data-pf]').forEach(btn=>{
+              btn.addEventListener('click', function(){
+                const mode = this.dataset.pf;
+                if (mode === 'card')   prefillCardFromResult(r);
+                if (mode === 'trim')   prefillTrimFromResult(r);
+                if (mode === 'dropin') prefillDropinFromResult(r);
+              });
+            });
+          }
+
+          host.appendChild(card);
+        });
+
+        if (moreCount){
+          const more = document.createElement('div');
+          more.style.marginTop='8px';
+          more.innerHTML = `
+            <form method="POST" action="<?= ScriptApp.getService().getUrl() ?>" target="_top"
+                  onsubmit="return guardSubmit(this,this.querySelector('button'))">
+              <input type="hidden" name="mode" value="staff">
+              <input type="hidden" name="staff_token" value="<?= view.staffToken ?>">
+              <input type="hidden" name="pin" value="<?= view.pin ?>">
+              <input type="hidden" name="ctx_date" value="<?= view.ctxDate ?>">
+              <input type="hidden" name="do" value="SEARCH">
+              <input type="hidden" name="more" value="1">
+              <input type="hidden" name="q" value="<?= view.searchQ ?>">
+              <input type="hidden" name="f_members" value="<?= view.fMembers ?>">
+              <input type="hidden" name="f_prereg" value="<?= view.fPreReg ?>">
+              <input type="hidden" name="f_contacts" value="<?= view.fContacts ?>">
+              <button class="btn">Voir plus (${moreCount})</button>
+            </form>
+          `;
+          host.appendChild(more);
+        }
+      }
+
+      // Wire Chunk A forms on load
+      window.addEventListener('load', function(){
+        document.querySelectorAll('form').forEach(form=>{
+          const act = String((form.querySelector('input[name="do"]')||{}).value||'').toUpperCase();
+          if (['SEARCH','ISSUE','TRIM','DROPIN'].includes(act)){
+            form.onsubmit = function(ev){
+              ev.preventDefault();
+              const btn = form.querySelector('button[type=submit],button:not([type])');
+              return handleAjaxSubmit(form, btn);
+            };
+          }
+        });
+      });
+
+      window.addEventListener('load', function(){
+        const q = document.getElementById('q'); 
+        if (q) q.focus();
+
+        // Drop-in dependent selects
+        const j2 = document.getElementById('di_jour');
+        const c2 = document.getElementById('di_cours');
+        if (j2 && c2){ 
+          fillCours(j2,c2); 
+          j2.addEventListener('change',()=>fillCours(j2,c2)); 
+        }
+
+        // Reporting dependent selects
+        const j3 = document.getElementById('rep_jour');
+        const c3 = document.getElementById('rep_cours');
+        if (j3 && c3){
+          fillCours(j3,c3);
+          j3.addEventListener('change',()=>fillCours(j3,c3));
+        }
+      });
+
+      (function () { try {
+        var u = new URL(location.href);
+        if (u.searchParams.has('pin')) { u.searchParams.delete('pin'); history.replaceState({}, '', u.toString()); }
+      } catch (e) {} })();
+
+      window.addEventListener('load', function(){
+        bindAutoPrice(document.querySelector('details.tint-trim form'));
+        bindAutoPrice(document.querySelector('details.tint-card form'));
+      });
+
+      // Sticky restore for ctx_date + auto-modal once (DATE-only)
+      window.addEventListener('load', function(){
+        try{
+          var hasCtxDate = '<?= (view.ctxDate) ? "1" : "0" ?>' === '1';
+
+          if (!hasCtxDate){
+            // try restore from localStorage
+            var d = localStorage.getItem('lpr_ctx_date') || '';
+            if (d){
+              // send it to server immediately via hidden quick form
+              setContextDate(d);
+              return; // stop here, page will reload with ctxDate
+            }
+
+            // nothing stored → open modal once
+            changeContextViaChip();
+          }
+        } catch(e){}
+      });
+
+
+    </script>
+    <script>
+      function initSmartValidateButtons(){
+        // Search multi-checkin blocks (keep this)
+        document.querySelectorAll('form').forEach(form=>{
+          const btn = form.querySelector('.searchValidateBtn');
+          if (!btn) return;
+          function refresh(){
+            const anyChecked = form.querySelectorAll('input[name="cours_sel"]:checked').length > 0;
+            btn.disabled = !anyChecked;
+          }
+          form.addEventListener('change', refresh);
+          refresh();
+        });
+      }
+
+      window.addEventListener('load', initSmartValidateButtons);
+    </script>
+    
+
+    <!-- Normal (non-sticky) header -->
+    <div class="card">
+      <h2>LPR Registration — Équipe</h2>
+      <? if (view.flashHtml) { ?><div class="flash"><?!= view.flashHtml ?></div><? } ?>
+    </div>
+
+    <!-- STICKY MINI BAR — max 2 lines -->
+    <div id="stickyBar" class="small">
+      <!-- Row 1: Context chip (left) + Name (right) -->
+      <div class="stickyRow1">
+        <div class="contextbar small">
+          <? if (view.ctxDate && view.ctxJour) { ?>
+            <button class="chip ctxchip aslink" type="button"
+                    onclick="changeContextViaChip()" title="Changer le contexte">
+              Contexte : <?= view.ctxDate ?> — <?= view.ctxJour ?>
+            </button>
+          <? } else { ?>
+            <button class="chip aslink" type="button"
+                    onclick="changeContextViaChip()" title="Définir le contexte">
+              Définir le contexte (date)
+            </button>
+          <? } ?>
+        </div>
+
+        <div class="who">Connecté : <strong><?= view.staffName ?></strong></div>
+      </div>
+
+      <!-- Row 2: RESET aligned under the name on the right -->
+      <div class="stickyRow2">
+        <form id="resetForm" method="POST" action="<?= ScriptApp.getService().getUrl() ?>" target="_top"
+              onsubmit="return guardSubmit(this,this.querySelector('button'))"
+              class="resetchip" style="display:inline-block">
+          <input type="hidden" name="mode" value="staff">
+          <input type="hidden" name="staff_token" value="<?= view.staffToken ?>">
+          <input type="hidden" name="pin" value="<?= view.pin ?>">
+          <input type="hidden" name="ctx_date" value="<?= view.ctxDate ?>">
+          <button class="chip aslink" type="submit">Réinitialiser</button>
+        </form>
+      </div>
+
+      <!-- Hidden quick context form for the chip + modal -->
+      <form id="ctxQuickForm" method="POST" action="<?= ScriptApp.getService().getUrl() ?>"
+            target="_top" style="display:none">
+        <input type="hidden" name="mode" value="staff">
+        <input type="hidden" name="staff_token" value="<?= view.staffToken ?>">
+        <input type="hidden" name="pin" value="<?= view.pin ?>">
+        <input type="hidden" name="ctx_date" value="<?= view.ctxDate ?>">
+      </form>
+    </div>
+
+
+
+    <? var recap = JSON.parse(view.recapJson||'{"present":[], "expected":[], "absent":[], "totals":{}}'); if ((recap.present && recap.present.length) || (recap.expected && recap.expected.length)) { ?>
+      <div class="card compact">
+        <h3>Récap — <?= (view.recapJour || view.ctxJour || 'Classe ?') ?> – <?= (view.recapCours || view.ctxCours || '') ?></h3>
+        <div class="small muted">
+          Date : <?= view.sessionDate ? view.sessionDate : 'aujourd’hui' ?>
+        </div>
+        <div class="small muted" style="margin-top:4px">
+          Présents: <?= (recap.totals && recap.totals.total)||0 ?> · Drop-in: <?= (recap.totals && recap.totals.dropin)||0 ?> · Cartes: <?= (recap.totals && recap.totals.cartes)||0 ?> · Trimestres: <?= (recap.totals && recap.totals.trims)||0 ?>
+        </div>
+        <? if (recap.present && recap.present.length) { ?>
+          <div style="margin-top:6px"><strong>Déjà cochés</strong></div>
+          <ol><? recap.present.forEach(function(r){ ?><li><?= r.name ?> <span class="chip"><?= r.action ?></span></li><? }); ?></ol>
+        <? } ?>
+        <? if (recap.expected && recap.expected.length) { ?>
+          <div style="margin-top:6px"><strong>Inscrits (attendus)</strong></div>
+          <ol><? recap.expected.forEach(function(r){ ?><li><?= r.name ?></li><? }); ?></ol>
+          <? if (recap.absent && recap.absent.length) { ?>
+            <div style="margin-top:6px"><strong>Absents (pas encore cochés)</strong></div>
+            <ol><? recap.absent.forEach(function(r){ ?><li><?= r.name ?></li><? }); ?></ol>
+          <? } ?>
+        <? } ?>
+      </div>
+    <? } ?>
+
+    <? if (view.showRecap) { ?>
+      <!-- Reporting / recap (admin-only, independent) -->
+      <details class="card tint-report">
+        <summary><h3 style="display:inline">Récap de classe (rapport)</h3></summary>
+
+        <form method="POST" action="<?= ScriptApp.getService().getUrl() ?>" target="_top"
+              onsubmit="return guardSubmit(this,this.querySelector('button[type=submit]'))">
+
+          <input type="hidden" name="mode" value="staff">
+          <input type="hidden" name="staff_token" value="<?= view.staffToken ?>">
+          <input type="hidden" name="pin" value="<?= view.pin ?>">
+          <input type="hidden" name="do" value="SESSION">
+
+          <div class="grid2">
+            <div>
+              <select id="rep_jour" name="rep_jour" required>
+                <option value="">Jour…</option>
+                <? var mmRep = JSON.parse(view.mappingJson||'{"jours":[]}'); 
+                  (mmRep.jours||[]).forEach(function(j){ 
+                    var sel = (view.repJour && view.repJour===j) || (!view.repJour && view.ctxJour===j);
+                ?>
+                  <option value="<?= j ?>" <?= sel?'selected':'' ?>><?= j ?></option>
+                <? }); ?>
+              </select>
+            </div>
+            <div>
+              <select id="rep_cours" name="rep_cours" required data-cur="<?= view.repCours || '' ?>">
+                <option value="">Cours…</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="grid2" style="margin-top:8px">
+            <div>
+              <input type="date" name="session_date" value="<?= view.sessionDate || '' ?>" required>
+            </div>
+            <div class="right">
+              <button class="btn" type="submit">Voir cette date</button>
+            </div>
+          </div>
+
+          <div class="small muted" style="margin-top:4px">
+            Ce recap est indépendant du contexte en haut.
+            Tu peux choisir n’importe quel jour, cours et date pour consulter une séance passée.
+          </div>
+        </form>
+      </details>
+    <? } ?>
+
+    <? if (view.showRecap) { ?>
+      <? 
+        var recap = JSON.parse(view.recapJson||'{"present":[], "expected":[], "absent":[], "totals":{}}'); 
+        if ((recap.present && recap.present.length) || (recap.expected && recap.expected.length)) { 
+      ?>
+        <div class="card compact">
+          <h3>Récap — <?= (view.repJour || 'Classe ?') ?> – <?= (view.repCours || '') ?></h3>
+          <div class="small muted">
+            Date : <?= view.sessionDate ? view.sessionDate : 'aujourd’hui' ?>
+          </div>
+          <div class="small muted" style="margin-top:4px">
+            Présents: <?= (recap.totals && recap.totals.total)||0 ?> · Drop-in: <?= (recap.totals && recap.totals.dropin)||0 ?> · Cartes: <?= (recap.totals && recap.totals.cartes)||0 ?> · Trimestres: <?= (recap.totals && recap.totals.trims)||0 ?>
+          </div>
+
+          <? if (recap.present && recap.present.length) { ?>
+            <div style="margin-top:6px"><strong>Déjà cochés</strong></div>
+            <ol>
+              <? recap.present.forEach(function(r){ ?>
+                <li><?= r.name ?> <span class="chip"><?= r.action ?></span></li>
+              <? }); ?>
+            </ol>
+          <? } ?>
+
+          <? if (recap.expected && recap.expected.length) { ?>
+            <div style="margin-top:6px"><strong>Inscrits (attendus)</strong></div>
+            <ol>
+              <? recap.expected.forEach(function(r){ ?>
+                <li><?= r.name ?></li>
+              <? }); ?>
+            </ol>
+
+            <? if (recap.absent && recap.absent.length) { ?>
+              <div style="margin-top:6px"><strong>Absents (pas encore cochés)</strong></div>
+              <ol>
+                <? recap.absent.forEach(function(r){ ?>
+                  <li><?= r.name ?></li>
+                <? }); ?>
+              </ol>
+            <? } ?>
+          <? } ?>
+        </div>
+      <? } ?>
+    <? } ?>
+
+    <!-- Search -->
+    <div class="card tint-search">
+      <h3>Recherche & check-in</h3>
+
+      <div class="small" style="margin-bottom:8px">
+        <button class="btn" type="button" onclick="startScanner()">Scanner un QR</button>
+        <button class="btn" type="button" onclick="pasteAndSearch()">Coller & chercher</button>
+      </div>
+
+      <div id="scanOverlay" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.75); z-index:9999; color:#fff; padding:14px;">
+        <div style="max-width:520px;margin:40px auto;background:#111;border-radius:12px;padding:12px">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <div>Scanner le QR...</div>
+            <button class="btn danger" type="button" onclick="stopScanner()">Fermer</button>
+          </div>
+          <div style="margin-top:8px">
+            <video id="video" style="width:100%; border-radius:8px; background:#000" muted playsinline></video>
+          </div>
+        </div>
+      </div>
+
+      <form method="POST" action="<?= ScriptApp.getService().getUrl() ?>" target="_top"
+            onsubmit="return guardSubmit(this,this.querySelector('button'))">
+        <input type="hidden" name="mode" value="staff">
+        <input type="hidden" name="staff_token" value="<?= view.staffToken ?>">
+        <input type="hidden" name="pin" value="<?= view.pin ?>">
+        <input type="hidden" name="ctx_date" value="<?= view.ctxDate ?>">
+        <input type="hidden" name="do" value="SEARCH">
+        <div class="full">
+          <input id="q" name="q" placeholder="Scanner un lien élève ou rechercher (ID, nom, email, téléphone…)" value="<?= view.searchQ ?>">
+        </div>
+        <div class="full" style="display:flex; gap:10px; flex-wrap:wrap">
+          <label class="cb"><input type="checkbox" name="f_members" value="1" <?= view.fMembers==='1'?'checked':'' ?>> Members</label>
+          <label class="cb"><input type="checkbox" name="f_prereg" value="1" <?= view.fPreReg==='1'?'checked':'' ?>> PreReg</label>
+          <label class="cb"><input type="checkbox" name="f_contacts" value="1" <?= view.fContacts==='1'?'checked':'' ?>> Contacts</label>
+        </div>
+        <div class="full"><button id="scanSubmit" class="btn">Chercher</button></div>
+      </form>
+
+      <? 
+        var results = JSON.parse(view.resultsJson||'[]'); 
+        if (results.length){ 
+          var trimsMeta = JSON.parse(view.trimsJson || '[]');
+          var today = new Date(); today.setHours(0,0,0,0);
+      ?>
+        <div class="small muted">Résultats : <?= results.length ?><?= view.moreCount ? ' (+'+view.moreCount+' masqués)' : '' ?></div>
+        <? results.forEach(function(r){ ?>
+          <div class="card compact" style="margin:10px 0; padding:10px">
+            <div>
+              <strong><?= r.nom ?> <?= r.prenom ?></strong>
+              <? if (r.id) { ?><span class="chip">ID: <?= r.id ?></span><? } ?>
+              <span class="chip"><?= r.source ?></span>
+              <? if (r.typeOffre) { ?><span class="chip"><?= r.typeOffre ?></span><? } ?>
+              <? if (r.typeOffre && r.typeOffre.toLowerCase().startsWith('carte')) { ?>
+                <span class="chip"><?= r.left ?>/<?= r.total ?></span>
+              <? } ?>
+              <? if (r.until) { ?>
+                <span class="chip">
+                  Jusqu’au: <?= fmtFRShortLocal(new Date(r.until)) ?>
+                  <?= r.expired ? '(expirée)' : '' ?>
+                </span>
+              <? } ?>
+              <? if (typeof r.owed !== 'undefined') {
+                  var owed = Number(r.owed||0);
+                  var bg = owed>0 ? '#fff5f5' : (owed<0 ? '#fffbe6' : '#f3fff3');
+                  var bd = owed>0 ? '#f5c2c7' : (owed<0 ? '#ffe58f' : '#9fddb2');
+                ?>
+                <span class="chip" style="background: <?= bg ?>; border-color: <?= bd ?>;">
+                  Solde: <?= owed ?>€
+                </span>
+              <? } ?>
+            </div>
+
+            <div class="small muted">
+              <?= r.email ?> <?= r.tel ? ' · '+r.tel : '' ?>
+              <? if (r.source==='Members' && r.typeOffre && r.typeOffre.toLowerCase().startsWith('trimestre') && r.forfaitTrim) { ?>
+                · Forfait: <?= r.forfaitTrim ?>
+              <? } ?>
+              <? if (r.source==='Members' && r.typeOffre && r.typeOffre.toLowerCase().startsWith('trimestre') && r.coursIncl) { ?>
+                · Cours inclus: <?= r.coursIncl ?>
+              <? } ?>
+            </div>
+
+            <? if (r.source==='Members') { 
+                // Multi-class check-in (Search override)
+                var mmCtx = JSON.parse(view.doorJson || '{"classes":[]}');
+                var ctxClasses = mmCtx.classes || [];
+
+                var typeOffre = (r.typeOffre || '').toLowerCase();
+                var isCard = typeOffre.indexOf('carte') === 0;
+                var isTrim = typeOffre.indexOf('trimestre') === 0;
+
+                var hasCtxDate = !!view.ctxDate;
+            ?>
+              <div style="margin-top:8px">
+
+                <? if ((isCard || isTrim) && hasCtxDate && ctxClasses.length) { ?>
+                  <form method="POST" action="<?= ScriptApp.getService().getUrl() ?>" target="_top"
+                        style="margin-top:6px"
+                        onsubmit="return guardSubmit(this,this.querySelector('button'))">
+
+                    <input type="hidden" name="mode" value="staff">
+                    <input type="hidden" name="staff_token" value="<?= view.staffToken ?>">
+                    <input type="hidden" name="pin" value="<?= view.pin ?>">
+                    <input type="hidden" name="ctx_date" value="<?= view.ctxDate ?>">
+                    <input type="hidden" name="do" value="CHECKIN_MULTI">
+                    <input type="hidden" name="member_id" value="<?= r.id ?>">
+
+                    <div class="small muted" style="margin-bottom:4px">
+                      Check-in pour <?= view.ctxJour ?> (<?= view.ctxDate ?>)
+                    </div>
+                   <? var alreadyList = r.alreadyCourses || []; ?>
+                    <? if (alreadyList && alreadyList.length) { ?>
+                      <div class="small muted" style="margin-bottom:4px">
+                        Déjà validés : <?= alreadyList.join(' · ') ?>
+                      </div>
+                    <? } ?>
+
+                    <? ctxClasses.forEach(function(c){
+                        var allowed = true;
+
+                        if (isTrim){
+                          // Trim: only classes included in their trimestre
+                          allowed = (String(r.coursIncl || '').indexOf(c) !== -1);
+                        }
+
+                        if (isCard){
+                          // Cards: any class is ok, but must be valid + have left>0
+                          allowed = !r.expired && (Number(r.left || 0) > 0);
+                        }
+                    ?>
+                      <label class="cb">
+                        <input type="checkbox"
+                               name="cours_sel"
+                               value="<?= c ?>"
+                               <?= (!allowed || alreadyList.indexOf(c) !== -1) ? 'disabled' : '' ?>>
+                        <?= c ?>
+                      </label>
+                    <? }); ?>
+
+                    <div class="right" style="margin-top:6px">
+                      <button class="btn good searchValidateBtn" type="submit" disabled>Valider</button>
+                    </div>
+                  </form>
+
+                <? } else if (isCard || isTrim) { ?>
+                  <div class="small muted" style="margin-top:6px">
+                    (Définis une date de contexte pour activer le check-in.)
+                  </div>
+                <? } ?>
+
+                <? if (r.url) { ?>
+                  <a class="btn" href="<?= r.url ?>" target="_blank" rel="noopener">Lien élève</a>
+                <? } ?>
+
+                <details style="display:inline-block; margin-left:8px">
+                  <summary class="btn">Enregistrer paiement</summary>
+                  <form method="POST" action="<?= ScriptApp.getService().getUrl() ?>" target="_top"
+                        style="margin-top:8px"
+                        onsubmit="return guardSubmit(this,this.querySelector('button'))">
+                    <input type="hidden" name="mode" value="staff">
+                    <input type="hidden" name="staff_token" value="<?= view.staffToken ?>">
+                    <input type="hidden" name="pin" value="<?= view.pin ?>">
+                    <input type="hidden" name="ctx_date" value="<?= view.ctxDate ?>">
+                    <input type="hidden" name="do" value="PAY">
+
+                    <div><input name="amount" placeholder="Montant (€)" inputmode="decimal" required></div>
+                    <div>
+                      <select name="modePaiement" required>
+                        <option value="">Mode…</option>
+                        <option>Espèces</option>
+                        <option>Chèque</option>
+                        <option>Virement</option>
+                        <option>Ajustement</option>
+                      </select>
+                    </div>
+                    <div><input name="ref" placeholder="Réf. chèque / Réf. (optionnel)"></div>
+                    <div><input name="payer" placeholder="Payeur (ex. Jean Dupont)"></div>
+                    <div><input name="linked_ids" placeholder="Liés à (IDs séparés par des virgules)" value="<?= r.id ?>"></div>
+                    <div class="full"><input name="note" placeholder="Note (optionnel)"></div>
+                    <div class="full right"><button class="btn good" type="submit">Enregistrer</button></div>
+                  </form>
+                </details>
+
+              </div>
+
+            <? } else { ?>
+              <div class="small muted" style="margin-top:6px">Pré-remplir création :</div>
+              <div>
+                <form method="POST" action="<?= ScriptApp.getService().getUrl() ?>" target="_top"
+                      style="display:inline-block"
+                      onsubmit="return guardSubmit(this,this.querySelector('button'))">
+                  <input type="hidden" name="mode" value="staff">
+                  <input type="hidden" name="staff_token" value="<?= view.staffToken ?>">
+                  <input type="hidden" name="pin" value="<?= view.pin ?>">
+                  <input type="hidden" name="ctx_date" value="<?= view.ctxDate ?>">
+                  <input type="hidden" name="do" value="SEARCH">
+                  <input type="hidden" name="q" value="">
+                  <input type="hidden" name="pf" value="card">
+                  <input type="hidden" name="prefill_nom" value="<?= r.nom ?>">
+                  <input type="hidden" name="prefill_prenom" value="<?= r.prenom ?>">
+                  <input type="hidden" name="prefill_email" value="<?= r.email ?>">
+                  <input type="hidden" name="prefill_tel" value="<?= r.tel ?>">
+                  <button class="btn" type="submit">Pré-remplir Carte</button>
+                </form>
+
+                <form method="POST" action="<?= ScriptApp.getService().getUrl() ?>" target="_top"
+                      style="display:inline-block"
+                      onsubmit="return guardSubmit(this,this.querySelector('button'))">
+                  <input type="hidden" name="mode" value="staff">
+                  <input type="hidden" name="staff_token" value="<?= view.staffToken ?>">
+                  <input type="hidden" name="pin" value="<?= view.pin ?>">
+                  <input type="hidden" name="ctx_date" value="<?= view.ctxDate ?>">
+                  <input type="hidden" name="do" value="SEARCH">
+                  <input type="hidden" name="q" value="">
+                  <input type="hidden" name="pf" value="trim">
+                  <input type="hidden" name="prefill_nom" value="<?= r.nom ?>">
+                  <input type="hidden" name="prefill_prenom" value="<?= r.prenom ?>">
+                  <input type="hidden" name="prefill_email" value="<?= r.email ?>">
+                  <input type="hidden" name="prefill_tel" value="<?= r.tel ?>">
+                  <? if (r.prereg && r.prereg.forfaitTrim) { ?>
+                    <input type="hidden" name="prefill_forfait" value="<?= r.prereg.forfaitTrim ?>">
+                  <? } ?>
+                  <button class="btn" type="submit">Pré-remplir Trimestre</button>
+                </form>
+              </div>
+            <? } ?>
+
+          </div>
+        <? }); ?>
+
+        <? if (view.moreCount) { ?>
+          <form method="POST" action="<?= ScriptApp.getService().getUrl() ?>" target="_top"
+                onsubmit="return guardSubmit(this,this.querySelector('button'))">
+            <input type="hidden" name="mode" value="staff">
+            <input type="hidden" name="staff_token" value="<?= view.staffToken ?>">
+            <input type="hidden" name="pin" value="<?= view.pin ?>">
+            <input type="hidden" name="ctx_date" value="<?= view.ctxDate ?>">
+            <input type="hidden" name="ctx_cours" value="<?= view.ctxCours ?>">
+            <input type="hidden" name="do" value="SEARCH">
+            <input type="hidden" name="more" value="1">
+            <input type="hidden" name="q" value="<?= view.searchQ ?>">
+            <input type="hidden" name="f_members" value="<?= view.fMembers ?>">
+            <input type="hidden" name="f_prereg" value="<?= view.fPreReg ?>">
+            <input type="hidden" name="f_contacts" value="<?= view.fContacts ?>">
+            <div class="full"><button class="btn">Voir plus (<?= view.moreCount ?>)</button></div>
+          </form>
+        <? } ?>
+      <? } ?>
+    </div>
+
+    <!-- Create TRIMESTRE -->
+    <? var trims = JSON.parse(view.trimsJson||'[]'); ?>
+    <details class="card tint-trim" <?= (view.prefill && (view.prefill.pf==='trim')) ? 'open':'' ?>>
+      <summary><h3 style="display:inline">Inscrire au trimestre (paiement reçu)</h3></summary>
+      <form method="POST" action="<?= ScriptApp.getService().getUrl() ?>" target="_top"
+            onsubmit="return validateTrimCours(this) && guardSubmit(this,this.querySelector('button'))">
+        <input type="hidden" name="mode" value="staff">
+        <input type="hidden" name="staff_token" value="<?= view.staffToken ?>">
+        <input type="hidden" name="pin" value="<?= view.pin ?>">
+        <input type="hidden" name="ctx_date" value="<?= view.ctxDate ?>">
+        <input type="hidden" name="do" value="TRIM">
+
+        <div><input name="nom" placeholder="Nom" value="<?= view.prefill.nom ?>" required></div>
+        <div><input name="prenom" placeholder="Prénom" value="<?= view.prefill.prenom ?>" required></div>
+        <div><input name="email" placeholder="Email" value="<?= view.prefill.email ?>" required></div>
+        <div><input name="telephone" placeholder="Téléphone" value="<?= view.prefill.telephone ?>"></div>
+
+        <div>
+          <select name="forfait" required>
+            <option value="">Forfait…</option>
+            <? CFG.TRIM_LABELS.forEach(function(L){ ?>
+              <option value="<?= L ?>" <?= view.prefill.forfait===L?'selected':'' ?>><?= L ?></option>
+            <? }); ?>
+          </select>
+        </div>
+
+        <div>
+          <select name="trimCode" required>
+            <option value="">Trimestre…</option>
+            <? trims.forEach(function(t){ ?>
+              <option value="<?= t.code ?>"><?= t.code ?> — <?= t.label ?></option>
+            <? }); ?>
+          </select>
+        </div>
+
+        <div class="full">
+          <div class="small muted" style="margin-bottom:6px">Cours inclus :</div>
+          <div class="small muted">(cochez ceux que l’abonnement couvre)</div>
+          <? var mm2 = JSON.parse(view.mappingJson||'{"mapping":{}}'); 
+             Object.keys(mm2.mapping||{}).forEach(function(j){
+               (mm2.mapping[j]||[]).forEach(function(c){ ?>
+                 <label class="cb"><input type="checkbox" name="coursIncl" value="<?= c ?>"> <?= c ?></label>
+          <?   }); 
+             }); ?>
+        </div>
+
+        <div><input name="amountEncaisse" placeholder="Montant encaissé (€)" inputmode="decimal" required value="<?= CFG.TRIM_PRICES[view.prefill.forfait] || '' ?>"></div>
+        <div>
+          <select name="modePaiement" required>
+            <option value="">Mode de paiement…</option>
+            <option>Espèces</option>
+            <option>Chèque</option>
+            <option>Virement</option>
+          </select>
+        </div>
+        <div><input name="refPaiement" placeholder="Réf. chèque / Réf. (optionnel)"></div>
+
+        <div class="full"><input name="commentaire" placeholder="Commentaire (optionnel)"></div>
+        <!-- TONIGHT’S CLASSES — MULTI-SELECT (TRIMESTRE) -->
+        <div class="full" id="trimUseNowBox">
+          <div class="small muted" style="margin-bottom:4px">
+            Cocher présence maintenant (cours de ce soir) :
+          </div>
+
+          <div id="trim_tonight_classes" class="small" style="display:flex; flex-direction:column; gap:6px;">
+            <!-- JS will inject class checkboxes here -->
+          </div>
+
+          <input type="hidden" name="useNow_multi" id="trim_useNow_multi">
+        </div>
+
+        <script>
+        (function(){
+          const ctxJour = '<?= view.ctxJour ?>';
+          const ctxCours = '<?= view.ctxCours ?>';
+          const mm = JSON.parse('<?= JSON.stringify(view.mappingJson || "{}") ?>' || '{}');
+          const mapping = JSON.parse(mm || '{"mapping":{}}').mapping || {};
+          const tonightList = mapping[ctxJour] || [];
+
+          const container = document.getElementById('trim_tonight_classes');
+          if (!container || !tonightList.length) return;
+
+          // Build checkboxes for tonight
+          tonightList.forEach(c=>{
+            const row = document.createElement('label');
+            row.className = 'cb small';
+            row.style.border = '1px solid #ccc';
+            row.style.borderRadius = '8px';
+            row.style.padding = '6px';
+
+            // If this class is included in trimester subscription (chosen in the issuing form), highlight later via JS observer
+            row.dataset.className = c;
+
+            row.innerHTML = `
+              <input type="checkbox" class="trimNowBox" value="${c}">
+              ${c}
+            `;
+            container.appendChild(row);
+          });
+
+          // Keep hidden input updated
+          function updateHidden(){
+            const selected = Array.from(document.querySelectorAll('.trimNowBox:checked')).map(x=>x.value);
+            document.getElementById('trim_useNow_multi').value = selected.join('|');
+          }
+          document.addEventListener('change', function(ev){
+            if (ev.target.classList.contains('trimNowBox')) updateHidden();
+          });
+
+          // Highlight included classes (green border)
+          function refreshHighlight(){
+            const included = Array.from(document.querySelectorAll('input[name="coursIncl"]:checked')).map(x=>x.value);
+            document.querySelectorAll('#trim_tonight_classes label').forEach(lbl=>{
+              const name = lbl.dataset.className;
+              if (included.includes(name)){
+                lbl.style.borderColor = '#1f7a3b';
+                lbl.style.background = '#e9fcef';
+              } else {
+                lbl.style.borderColor = '#ccc';
+                lbl.style.background = 'transparent';
+              }
+            });
+          }
+          document.addEventListener('change', function(ev){
+            if (ev.target.name === 'coursIncl') refreshHighlight();
+          });
+        })();
+        </script>
+        <div class="full"><button class="btn good" type="submit">Enregistrer l’inscription</button></div>
+      </form>
+    </details>
+
+    <!-- Create CARD -->
+    <details class="card tint-card" <?= (view.prefill && view.prefill.pf==='card') ? 'open':'' ?>>
+      <summary><h3 style="display:inline">Créer une carte (paiement reçu)</h3></summary>
+      <form method="POST" action="<?= ScriptApp.getService().getUrl() ?>" target="_top"
+            onsubmit="return validateCardPrefs(this) && guardSubmit(this,this.querySelector('button'))">
+        <input type="hidden" name="mode" value="staff">
+        <input type="hidden" name="staff_token" value="<?= view.staffToken ?>">
+        <input type="hidden" name="pin" value="<?= view.pin ?>">
+        <input type="hidden" name="ctx_date" value="<?= view.ctxDate ?>">
+        <input type="hidden" name="do" value="ISSUE">
+
+        <div><input name="nom" placeholder="Nom" value="<?= view.prefill.nom ?>" required></div>
+        <div><input name="prenom" placeholder="Prénom" value="<?= view.prefill.prenom ?>" required></div>
+        <div><input name="email" placeholder="Email" value="<?= view.prefill.email ?>" required></div>
+        <div><input name="telephone" placeholder="Téléphone" value="<?= view.prefill.telephone ?>"></div>
+
+        <div>
+          <select name="cardType" required>
+            <option value="">Type de carte…</option>
+            <option value="6">Carte 6 cours — 70€ (validité 4 mois)</option>
+            <option value="12">Carte 12 cours — 135€ (validité 6 mois)</option>
+          </select>
+        </div>
+
+        <!-- NEW: Preferred classes for the card -->
+        <div class="full">
+          <div class="small muted" style="margin-bottom:6px">Cours préférés (pour la liste rapide) :</div>
+          <div class="small muted">(coche les cours où cette carte sera utilisée le plus souvent)</div>
+          <? var mmCard = JSON.parse(view.mappingJson||'{"mapping":{}}');
+             Object.keys(mmCard.mapping||{}).forEach(function(j){
+               (mmCard.mapping[j]||[]).forEach(function(c){ ?>
+                 <label class="cb"><input type="checkbox" name="coursPref" value="<?= c ?>"> <?= c ?></label>
+          <?   });
+             }); ?>
+        </div>
+
+        <div><input name="amountEncaisse" placeholder="Montant encaissé (€)" inputmode="decimal" required></div>
+        <div>
+          <select name="modePaiement" required>
+            <option value="">Mode de paiement…</option>
+            <option>Espèces</option>
+            <option>Chèque</option>
+            <option>Virement</option>
+          </select>
+        </div>
+        <div><input name="refPaiement" placeholder="Réf. chèque / Réf. (optionnel)"></div>
+
+        <div class="full"><input name="commentaire" placeholder="Commentaire (optionnel)"></div>
+        <div class="full"><label class="cb small"><input type="checkbox" name="renew" value="1"> Renouveler carte (autorisé si expirée ou solde = 0)</label></div>
+        <!-- TONIGHT’S CLASSES — MULTI-SELECT (CARD) -->
+        <div class="full" id="cardUseNowBox">
+          <div class="small muted" style="margin-bottom:4px">
+            Débiter maintenant (cours de ce soir) :
+          </div>
+
+          <div id="card_tonight_classes" class="small" style="display:flex; flex-direction:column; gap:6px;">
+            <!-- JS injects tonight classes here -->
+          </div>
+
+          <input type="hidden" name="useNow_multi_card" id="card_useNow_multi">
+        </div>
+
+        <script>
+        (function(){
+          const ctxJour = '<?= view.ctxJour ?>';
+          const ctxCours = '<?= view.ctxCours ?>';
+          const mm = JSON.parse('<?= JSON.stringify(view.mappingJson || "{}") ?>' || '{}');
+          const mapping = JSON.parse(mm || '{"mapping":{}}').mapping || {};
+          const tonightList = mapping[ctxJour] || [];
+
+          const container = document.getElementById('card_tonight_classes');
+          if (!container || !tonightList.length) return;
+
+          // Build checkboxes for tonight
+          tonightList.forEach(c=>{
+            const row = document.createElement('label');
+            row.className = 'cb small';
+            row.style.border = '1px solid #ccc';
+            row.style.borderRadius = '8px';
+            row.style.padding = '6px';
+            row.dataset.className = c;
+
+            row.innerHTML = `
+              <input type="checkbox" class="cardNowBox" value="${c}">
+              ${c}
+            `;
+            container.appendChild(row);
+          });
+
+          // Update hidden field
+          function updateHidden(){
+            const selected = Array.from(document.querySelectorAll('.cardNowBox:checked'))
+                                  .map(x=>x.value);
+            document.getElementById('card_useNow_multi').value = selected.join('|');
+          }
+          document.addEventListener('change', function(ev){
+            if (ev.target.classList.contains('cardNowBox')) updateHidden();
+          });
+
+          // Highlight preferred classes
+          function refreshHighlight(){
+            const prefs = Array.from(document.querySelectorAll('input[name="coursPref"]:checked'))
+                              .map(x=>x.value);
+            document.querySelectorAll('#card_tonight_classes label').forEach(lbl=>{
+              const name = lbl.dataset.className;
+              if (prefs.includes(name)){
+                lbl.style.borderColor = '#1f7a3b';
+                lbl.style.background = '#e9fcef';
+              } else {
+                lbl.style.borderColor = '#ccc';
+                lbl.style.background = 'transparent';
+              }
+            });
+          }
+          document.addEventListener('change', function(ev){
+            if (ev.target.name === 'coursPref') refreshHighlight();
+          });
+        })();
+        </script>
+        <div class="full"><button class="btn good" type="submit">Créer la carte</button></div>
+      </form>
+    </details>
+
+    <!-- Drop-in -->
+    <details class="card tint-drop">
+      <summary><h3 style="display:inline">Drop-in (12 €)</h3></summary>
+      <form method="POST" action="<?= ScriptApp.getService().getUrl() ?>" target="_top"
+            onsubmit="return guardSubmit(this,this.querySelector('button'))">
+        <input type="hidden" name="mode" value="staff">
+        <input type="hidden" name="staff_token" value="<?= view.staffToken ?>">
+        <input type="hidden" name="pin" value="<?= view.pin ?>">
+        <input type="hidden" name="ctx_date" value="<?= view.ctxDate ?>">
+        <input type="hidden" name="do" value="DROPIN">
+
+        <div><input name="nom" placeholder="Nom" required></div>
+        <div><input name="prenom" placeholder="Prénom" required></div>
+        <div><input name="email" placeholder="Email" required></div>
+        <div><input name="telephone" placeholder="Téléphone"></div>
+
+      <!-- Jour is now purely context-based; we keep it as a hidden field for backend compatibility -->
+      <input type="hidden" name="jour" value="<?= view.ctxJour ?>">
+
+        <!-- MULTI-CLASS FOR DROP-IN -->
+        <div class="full" id="dropin_classes_box">
+          <div class="small muted" style="margin-bottom:4px">
+            Cours (choisir un ou plusieurs) :
+          </div>
+
+          <div id="dropin_class_list" style="display:flex; flex-direction:column; gap:6px;"></div>
+
+          <input type="hidden" id="dropin_multi" name="dropin_multi">
+        </div>
+
+        <script>
+        window.addEventListener('DOMContentLoaded', function(){
+          const ctxJour = '<?= view.ctxJour ?>';
+          const box     = document.getElementById('dropin_class_list');
+          const hidden  = document.getElementById('dropin_multi');
+          const amount  = document.querySelector('details.tint-drop [name="amountEncaisse"]');
+
+          const mm = JSON.parse('<?= JSON.stringify(view.mappingJson || "{}") ?>' || '{}');
+          const mapping = JSON.parse(mm || '{"mapping":{}}').mapping || {};
+
+          function rebuildClasses(){
+            const j = ctxJour || '';
+            const list = mapping[j] || [];
+            box.innerHTML = '';
+            hidden.value = '';
+
+            list.forEach(c=>{
+              const row = document.createElement('label');
+              row.className = 'cb small';
+              row.style.border = '1px solid #ccc';
+              row.style.borderRadius = '8px';
+              row.style.padding = '6px';
+              row.dataset.className = c;
+
+              row.innerHTML = `
+                <input type="checkbox" class="di_now" value="${c}">
+                ${c}
+              `;
+              box.appendChild(row);
+            });
+
+            updateHiddenAndPrice();
+          }
+
+          function updateHiddenAndPrice(){
+            const selected = Array.from(
+              document.querySelectorAll('.di_now:checked')
+            ).map(x => x.value);
+
+            hidden.value = selected.join('|');
+
+            if (amount){
+              const base = 12;
+              const total = selected.length * base;
+              amount.value = total > 0 ? total : base;
+            }
+          }
+
+          document.addEventListener('change', function(ev){
+            if (ev.target.classList.contains('di_now')){
+              updateHiddenAndPrice();
+            }
+          });
+
+          // Build classes once from context jour
+          rebuildClasses();
+        });
+        </script>
+
+        <div><input name="amountEncaisse" placeholder="Montant encaissé (€)" inputmode="decimal" value="12"></div>
+        <div>
+          <select name="modePaiement" required>
+            <option value="">Mode de paiement…</option>
+            <option>Espèces</option>
+            <option>Chèque</option>
+            <option>Virement</option>
+          </select>
+        </div>
+        <div><input name="refPaiement" placeholder="Réf. chèque / Réf. (optionnel)"></div>
+
+        <div class="full"><button class="btn good" type="submit">Enregistrer présence Drop-in</button></div>
+      </form>
+      <p class="muted small">Le drop-in crée/actualise le membre et écrit une ligne dans le journal.</p>
+    </details>
+
+    <? var door = JSON.parse(view.doorJson || '{"classes":[],"rows":[]}'); ?>
+    <? if (view.ctxJour) { ?>
+      <div class="card tint-door" id="doorCard">
+        <h3>Liste rapide — <?= view.ctxJour ?><? if (door.classes && door.classes.length){ ?> (<?= door.classes.join(' · ') ?>)<? } ?></h3>
+        <p class="small muted">
+          Coche les cours suivis pour chaque personne, puis clique sur <strong>Valider</strong>.
+          <br>Les lignes déjà totalement traitées sont grisées.
+        </p>
+
+        <? if (door.rows && door.rows.length && door.classes && door.classes.length) { ?>
+          <? door.rows.forEach(function(r, idx){ ?>
+            <? 
+              // 🔎 Filter: skip rows that are truly unusable
+              var shouldShow = true;
+
+              // Card: hide only if expired
+              if (r.isCard && r.expired) shouldShow = false;
+
+              // Trims: we rely on backend to filter by window & mapping,
+              // even if everything is already marked, we still want the row visible.
+
+              if (!shouldShow) return;
+
+              var rowClass = r.allDone ? 'door-row-allDone' : (r.partiallyDone ? 'door-row-partial' : '');
+              var zebra = (idx % 2 === 0) ? 'door-zebra-a' : 'door-zebra-b';
+            ?>
+            <div class="door-row <?= rowClass ?> <?= zebra ?>">
+              <div class="door-row-main small">
+                <? var nomCaps = String(r.nom || '').toUpperCase(); ?>
+                <strong><?= nomCaps ?> <?= r.prenom ?></strong>
+                <span class="chip"><?= r.typeOffre ?></span>
+                <? if (r.isTrim && r.forfaitTrim) { ?>
+                  <span class="chip small"><?= r.forfaitTrim ?></span>
+                <? } ?>
+                  <? if (r.isCard) { ?>
+                    <span class="chip"
+                          data-balance="1"
+                          data-balance-left="<?= r.left ?>"
+                          data-balance-total="<?= r.total ?>">
+                      <?= r.left ?>/<?= r.total ?>
+                    </span>
+                    <? if (r.until) { ?>
+                      <span class="chip">
+                        Jusqu’au: <?= fmtFRShortLocal(new Date(r.until)) ?>
+                        <?= r.expired ? '(expirée)' : '' ?>
+                      </span>
+                    <? } ?>
+                  <? } ?>
+                <? if (typeof r.owed !== 'undefined') {
+                     var owed = Number(r.owed || 0);
+                     var bg = owed>0 ? '#fff5f5' : (owed<0 ? '#fffbe6' : '#f3fff3');
+                     var bd = owed>0 ? '#f5c2c7' : (owed<0 ? '#ffe58f' : '#9fddb2');
+                ?>
+                  <span class="chip" style="background: <?= bg ?>; border-color: <?= bd ?>;">
+                    Solde: <?= owed ?>€
+                  </span>
+                <? } ?>
+              </div>
+
+              <form method="POST"
+                    action="<?= ScriptApp.getService().getUrl() ?>"
+                    target="_top"
+                    class="door-row-form small"
+                    onsubmit="return false;">
+                <input type="hidden" name="mode" value="staff">
+                <input type="hidden" name="staff_token" value="<?= view.staffToken ?>">
+                <input type="hidden" name="pin" value="<?= view.pin ?>">
+                <input type="hidden" name="ctx_date" value="<?= view.ctxDate ?>">
+                <input type="hidden" name="do" value="DOORROW">
+                <input type="hidden" name="member_id" value="<?= r.id ?>">
+
+                <div class="door-row-classes">
+                  <? door.classes.forEach(function(c){
+                      var cell = (r.classCells || []).find(function(cc){ return cc.cours === c; }) || {};
+                      var cellCls = cell.already ? 'door-cell-done' :
+                                    ((!cell.canAttend && !cell.canSpend) ? 'door-cell-disabled' : '');
+                  ?>
+                    <div class="<?= cellCls ?>">
+                      <? if (cell.already) { ?>
+                        <button type="button"
+                                class="doorBtn doorBtn-done small"
+                                data-member-id="<?= r.id ?>"
+                                data-cours="<?= c ?>"
+                                disabled>
+                          ✅ <?= c ?>
+                        </button>
+                      <? } else if (cell.canAttend || cell.canSpend) { ?>
+                        <button type="button"
+                                class="doorBtn <?= cell.canSpend ? 'doorBtn-card' : 'doorBtn-trim' ?> small"
+                                data-member-id="<?= r.id ?>"
+                                data-cours="<?= c ?>"
+                                data-mode="<?= cell.canSpend ? 'CARD' : 'TRIM' ?>">
+                          <?= c ?>
+                          <? if (cell.canSpend) { ?><span class="doorBtn-tag">💳</span><? } ?>
+                        </button>
+                      <? } else { ?>
+                        <span class="small muted">—</span>
+                      <? } ?>
+                    </div>
+                  <? }); ?>
+                </div>
+              </form>
+            </div>
+          <? }); ?>
+        <? } else { ?>
+          <p class="small muted">
+            Aucun inscrit trouvé pour ce jour (cartes avec cours préférés ou trimestres avec cours inclus).
+            <br>Quand tu créeras / mettras à jour des offres, les personnes apparaîtront ici.
+          </p>
+        <? } ?>
+      </div>
+    <? } else { ?>
+      <div class="card tint-door" id="doorCard">
+        <h3>Liste rapide</h3>
+        <p class="small muted">Choisis d’abord un contexte (jour & cours) en haut pour afficher la liste des personnes.</p>
+      </div>
+    <? } ?>
+
+    <!-- Context modal -->
+      <div id="ctxModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.55); z-index:99999;">
+        <div class="card" style="max-width:520px; margin:16vh auto; background:#fff;">
+          <h3>Contexte requis</h3>
+          <p class="small muted">Sélectionnez la date de la séance.</p>
+          <div style="margin-top:6px">
+            <input id="ctxModalDate" type="date">
+          </div>
+          <div class="right" style="margin-top:10px">
+            <button class="btn" data-act="cancel" type="button">Annuler</button>
+            <button class="btn good" data-act="ok" type="button">Confirmer</button>
+          </div>
+        </div>
+      </div>
+  <? } ?>
+
+<script>
+  (function(){
+    // Mark row as partial / all-done based on disabled buttons
+    function updateRowVisualState(rowEl){
+      if (!rowEl) return;
+      const buttons = rowEl.querySelectorAll('.doorBtn');
+      const total = buttons.length;
+      let done = 0;
+      buttons.forEach(function(btn){
+        if (btn.disabled) done++;
+      });
+      rowEl.classList.remove('door-row-partial','door-row-allDone');
+      if (done === 0) return;
+      if (done === total){
+        rowEl.classList.add('door-row-allDone');
+      } else {
+        rowEl.classList.add('door-row-partial');
+      }
+    }
+
+    // Decrement balance chip for cards, based on data-balance-* attributes
+    function updateCardBalanceChip(rowEl){
+      if (!rowEl) return;
+      const chip = rowEl.querySelector('[data-balance="1"]');
+      if (!chip) return;
+
+      const leftAttr  = chip.getAttribute('data-balance-left')  || '0';
+      const totalAttr = chip.getAttribute('data-balance-total') || '0';
+
+      let left  = parseInt(leftAttr, 10);
+      const total = parseInt(totalAttr, 10);
+
+      if (isNaN(left))  left = 0;
+
+      if (left > 0) left = left - 1;
+      if (left < 0) left = 0;
+
+      chip.setAttribute('data-balance-left', String(left));
+      chip.textContent = left + '/' + (isNaN(total) ? '' : total);
+    }
+
+    function handleDoorClick(ev){
+      const btn = ev.target.closest('.doorBtn');
+      if (!btn) return;
+
+      // If already done or busy, ignore
+      if (btn.disabled) return;
+      if (btn.dataset.busy === '1') return;
+
+      const memberId = btn.dataset.memberId;
+      const cours    = btn.dataset.cours;
+      const mode     = btn.dataset.mode || ''; // 'CARD' or 'TRIM'
+      if (!memberId || !cours) return;
+
+      const rowEl    = btn.closest('.door-row');
+      const ctxDate  = '<?= view.ctxDate ?>';
+      const actionUrl = '<?= ScriptApp.getService().getUrl() ?>';
+
+      const fd = new FormData();
+      fd.append('mode', 'staff');
+      fd.append('staff_token', '<?= view.staffToken ?>');
+      fd.append('pin', '<?= view.pin ?>');
+      fd.append('ctx_date', ctxDate || '');
+      fd.append('do', 'DOORROW');
+      fd.append('member_id', memberId);
+      fd.append('doorCours', cours);
+      fd.append('submission_id', 'S-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2,8));
+
+      // Put button into "busy" state
+      btn.dataset.busy = '1';
+      const originalLabel = btn.textContent; // just text, no HTML
+      btn.disabled = true;
+      btn.innerHTML = originalLabel + ' <span class="spinner"></span>';
+
+      fetch(actionUrl, { method:'POST', body: fd })
+        .then(function(resp){ return resp.text(); })
+        .then(function(_html){
+          // SUCCESS PATH: backend handled DOORROW (logs/emails already done)
+
+          // Final state: ✅ + disabled (never re-enable on UI errors)
+          btn.dataset.busy = '0';
+          btn.disabled = true;
+          btn.innerHTML = '✅ ' + cours;
+
+          try {
+            btn.classList.remove('doorBtn-card');
+            btn.classList.remove('doorBtn-trim');
+            btn.classList.add('doorBtn-done');
+          } catch(e){
+            console.error('Door button class update error', e);
+          }
+
+          // Update card balance chip for cards
+          try {
+            if (mode === 'CARD') {
+              updateCardBalanceChip(rowEl);
+            }
+          } catch(e){
+            console.error('Card balance update error', e);
+          }
+
+          // Update row visual state (partial / all-done)
+          try {
+            updateRowVisualState(rowEl);
+          } catch(e){
+            console.error('Row visual update error', e);
+          }
+        })
+        .catch(function(err){
+          console.error('Door AJAX network/UI error', err);
+
+          // Even if we hit a network/UI error here, the backend is idempotent
+          // and protects against duplicate spends/attendances with submission_id.
+          // So we *still* move the UI to the "success" state to avoid re-clicks.
+
+          btn.dataset.busy = '0';
+          btn.disabled = true;
+          btn.innerHTML = '✅ ' + cours;
+
+          try {
+            btn.classList.remove('doorBtn-card');
+            btn.classList.remove('doorBtn-trim');
+            btn.classList.add('doorBtn-done');
+          } catch(e){
+            console.error('Door button class update error (catch)', e);
+          }
+
+          try {
+            if (mode === 'CARD') {
+              updateCardBalanceChip(rowEl);
+            }
+          } catch(e){
+            console.error('Card balance update error (catch)', e);
+          }
+
+          try {
+            updateRowVisualState(rowEl);
+          } catch(e){
+            console.error('Row visual update error (catch)', e);
+          }
+        });
+    }
+
+    window.addEventListener('load', function(){
+      var doorCard = document.getElementById('doorCard');
+      if (doorCard){
+        doorCard.addEventListener('click', handleDoorClick);
+        // Initial state for existing "already" buttons
+        document.querySelectorAll('.door-row').forEach(function(row){
+          updateRowVisualState(row);
+        });
+      }
+    });
+  })();
+</script>
+
+</body>
+</html>
