@@ -1,73 +1,88 @@
 # LPR Registration System (Google Apps Script)
 
-A production-ready registration and check-in system built with Google Apps Script and Google Sheets.
+Production-ready registration and operational check-in system built with Google Apps Script and Google Sheets.
 
 ## Overview
 
-This project manages:
+This system manages:
 
 - Student registrations
 - Trimester subscriptions
-- Class cards (6 / 12)
+- Class cards (6 / 12 sessions)
 - Multi-class drop-ins
-- Door check-in lists
+- Real-time door check-in lists
 - Payment logging
 - Owed / credit balance tracking
-- Context-based backdating for historical entries
+- Controlled historical backdating
 
-Designed for high-speed real-world use at class entrances.
+Designed for high-speed real-world usage in live class environments, where operational reliability and fast data validation are critical.
 
 ---
 
-## Key Architecture Concepts
+## System Design & Architecture
 
-### Context Engine
-All actions use a session context date:
+### Context-Based Processing Engine
+
+All transactions operate using a controlled session context date to allow:
+
 - ISSUE (card / trimester)
-- SPEND / ATTEND
+- ATTEND / SPEND
 - DROP-IN
-- DOORLIST validation
+- Doorlist validation
 
-This allows full historical backdating while preserving audit timestamps.
+This enables historical backdating while preserving immutable audit timestamps for traceability.
 
-### Idempotency
-Each submission includes a `submission_id` to prevent duplicate writes.
+### Idempotent Submissions
 
-### Multi-Class Drop-ins
-Drop-ins support multiple classes per session.
-Expected price auto-calculates as:
+Each transaction includes a unique `submission_id` to prevent duplicate writes and ensure data integrity during concurrent usage.
 
-12€ × number_of_classes
+### Multi-Class Drop-In Logic
 
-Balance calculations reflect real expected totals.
+Supports multiple classes per session.
 
-### Door List Engine
-- Zebra rows
+Dynamic pricing calculation based on session count.
+Balance tracking reflects real-time expected totals.
+
+### Doorlist Validation Engine
+
+- Zebra-row rendering for visual clarity
 - Partial validation indicators
-- Explicit class-level validation
-- Smart enable/disable logic
+- Explicit class-level validation logic
+- Conditional enable/disable controls
+- Optimised for fast entrance throughput
 
 ---
 
-## Tech Stack
+## Technical Stack
 
-- Google Apps Script (backend)
+- Google Apps Script (server-side logic)
 - HTMLService frontend
-- Google Sheets datastore
-- Vanilla JS (no external framework)
+- Google Sheets datastore (structured transactional model)
+- Vanilla JavaScript (no external frameworks)
+
+---
+
+## Operational Characteristics
+
+- Designed for production usage
+- Supports concurrent form submissions
+- Minimises manual intervention
+- Reduces administrative overhead
+- Ensures auditability of financial records
+- Improves entrance flow efficiency
 
 ---
 
 ## Deployment
 
 1. Create a Google Apps Script project bound to a Google Sheet.
-2. Paste:
+2. Add:
    - `apps-script/Code.js`
    - `apps-script/page.html`
 3. Deploy as Web App.
-4. Set your own deployment URL in configuration.
+4. Configure deployment URL in script properties.
 
-> This public repository excludes private deployment URLs and operational credentials.
+> This public repository excludes private deployment URLs, sheet IDs and operational credentials.
 
 ---
 
@@ -79,10 +94,10 @@ Current benchmark release: **v4.5.0**
 
 ## Roadmap
 
-- Reduce doorlist POST overhead (batching)
-- Financial report: users who owe / are owed
-- UI refinements for mobile
-- Email template improvements
+- Batch optimisation for doorlist POST operations
+- Financial reporting dashboard (owed / credit reconciliation)
+- Mobile UI refinement
+- Notification and email automation improvements
 
 ---
 
